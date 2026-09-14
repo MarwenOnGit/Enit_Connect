@@ -55,7 +55,7 @@ router.post("/upload/:id", authJwt.verifyToken, authJwt.isStudent, storage, cont
 //Add folder
 router.post('/folder', authJwt.verifyToken, authJwt.isStudent, controller.createFolder);
 //Add file
-router.post('/file', savedoc, controller.createFile);
+router.post('/file', authJwt.verifyToken, authJwt.isStudent, savedoc, controller.createFile);
 //Get documents
 router.get('/documents', authJwt.verifyToken, authJwt.isStudent, controller.listDocuments);
 router.post('/documents', authJwt.verifyToken, controller.getDocuments);
