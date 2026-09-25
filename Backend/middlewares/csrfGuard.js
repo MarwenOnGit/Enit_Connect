@@ -22,6 +22,12 @@
 // attaches ambient cookies to those on an attacker's behalf, so it is allowed
 // through. This keeps non-browser API clients and the existing test suite
 // working while closing the browser CSRF path.
+//
+// A header that is PRESENT but not a parseable origin is rejected, never
+// treated as absent. Browsers send the literal `Origin: null` from opaque
+// contexts (sandboxed iframes, data: URLs), which an attacker controls and can
+// pair with a no-referrer policy; treating that as "no header" would bypass
+// the guard entirely.
 
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -55,13 +61,16 @@ const csrfGuard = (req, res, next) => {
     return next();
   }
 
-  const origin =
-    normalizeOrigin(req.headers.origin) || normalizeOrigin(req.headers.referer);
+  const rawOrigin = req.headers.origin;
+  const rawReferer = req.headers.referer;
 
   // No browser-supplied origin: not a cross-site browser request.
-  if (!origin) {
+  if (!rawOrigin && !rawReferer) {
     return next();
   }
+
+  // Origin takes precedence; Referer is only a fallback for older clients.
+  const origin = normalizeOrigin(rawOrigin || rawReferer);
 
   const allowed = getAllowedOrigins();
 
@@ -71,7 +80,7 @@ const csrfGuard = (req, res, next) => {
   );
   if (selfOrigin) allowed.add(selfOrigin);
 
-  if (allowed.has(origin)) {
+  if (origin && allowed.has(origin)) {
     return next();
   }
 
@@ -79,7 +88,7 @@ const csrfGuard = (req, res, next) => {
     ip: req.ip,
     method: req.method,
     path: req.originalUrl,
-    origin,
+    origin: origin || String(rawOrigin || rawReferer).slice(0, 200),
     timestamp: new Date().toISOString(),
   });
 

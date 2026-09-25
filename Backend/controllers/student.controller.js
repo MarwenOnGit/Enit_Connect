@@ -1520,7 +1520,7 @@ exports.getByName = async (req, res) => {
     students.forEach((doc) => {
       const name = `${doc.firstname} ${doc.lastname}`;
       if (stringSimilarity.compareTwoStrings(name.toLowerCase(), req.query.q.toLowerCase()) > 0.45) {
-        response.push(mapStudentRow(doc));
+        response.push(mapStudentDirectoryRow(doc));
       }
     });
     res.status(200).send(response);
@@ -1534,7 +1534,6 @@ exports.getStudentLocations = async (req, res) => {
   const allowed = {
     firstname: "firstname",
     lastname: "lastname",
-    email: "email",
     country: "country",
     city: "city",
     class: "\"class\"",
@@ -1568,7 +1567,6 @@ exports.getByKey = async (req, res) => {
   const allowed = {
     firstname: "firstname",
     lastname: "lastname",
-    email: "email",
     country: "country",
     city: "city",
     class: "\"class\"",
@@ -1582,7 +1580,7 @@ exports.getByKey = async (req, res) => {
 
   try {
     const docs = await studentRepository.searchByKey(column, req.query.key);
-    const response = docs.map(mapStudentRow);
+    const response = docs.map(mapStudentDirectoryRow);
     res.status(200).send(response);
   } catch (err) {
     console.error("[500]", req.method, req.originalUrl, err);
@@ -1603,7 +1601,7 @@ exports.getByFilters = async (req, res) => {
       promotion,
       className,
     });
-    res.status(200).send(docs.map(mapStudentRow));
+    res.status(200).send(docs.map(mapStudentDirectoryRow));
   } catch (err) {
     console.error("[500]", req.method, req.originalUrl, err);
     res.status(500).send({ message: "Internal server error." });
@@ -1658,7 +1656,10 @@ exports.getStudentById = async (req, res) => {
     if (!student) {
       return res.status(404).send({ message: "User Not found." });
     }
-    return res.status(200).send(mapStudentRow(student));
+    // Only the student themselves sees their contact and geolocation fields;
+    // any other authenticated caller gets the public directory projection.
+    const isSelf = String(req.id) === String(student.id);
+    return res.status(200).send(isSelf ? mapStudentRow(student) : mapStudentDirectoryRow(student));
   } catch (err) {
     console.error("[500]", req.method, req.originalUrl, err);
     res.status(500).send({ message: "Internal server error." });

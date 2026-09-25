@@ -47,6 +47,13 @@ exports.getUserInfo = async (req, res) => {
   }
 
   try {
+    // Applicant contact details are only disclosed to the student themselves
+    // or to a company the student has applied to.
+    const isSelf = String(req.id) === String(req.params.id);
+    if (!isSelf && !(await offerRepository.hasCandidacyForCompany(req.id, req.params.id))) {
+      return res.status(403).send({ message: "Unauthorized!" });
+    }
+
     const student = await studentRepository.findById(req.params.id);
     if (!student) {
       return res.status(404).send({ message: "User Not found." });

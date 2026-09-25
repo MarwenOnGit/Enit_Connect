@@ -43,6 +43,17 @@ const updateOfferMock = spies.updateOffer;
 const deleteOfferMock = spies.deleteOffer;
 const createPostMock = spies.createPost;
 const searchByKeyMock = spies.searchByKey;
+const listCandidaciesMock = spies.listCandidacies;
+const listCandidaciesByOfferIdsMock = spies.listCandidaciesByOfferIds;
+const hasCandidacyForCompanyMock = spies.hasCandidacyForCompany;
+
+const PII_FIELDS = ["email", "phone", "address", "latitude", "longitude"];
+const expectNoPii = (row) => {
+  expect(row).toBeDefined();
+  for (const leaked of PII_FIELDS) {
+    expect(row).not.toHaveProperty(leaked);
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Mocks: repository layer + outbound email only
@@ -142,6 +153,114 @@ describe("A01:2021 Broken Access Control", () => {
     // Non-sensitive directory fields are still present.
     expect(row).toHaveProperty("firstname");
     expect(row).toHaveProperty("promotion");
+  });
+
+  it.each([
+    ["name search", "/api/student/find?q=Test%20Student"],
+    ["property search", "/api/student/search?property=firstname&key=Test"],
+    ["filter search", "/api/student/filter?city=Tunis"],
+  ])("student %s never exposes contact or geolocation PII", async (_label, url) => {
+    if (url.includes("/search")) searchByKeyMock.mockResolvedValueOnce([student]);
+    const res = await auth(request(app).get(url), companyToken());
+    expect(res.status).toBe(200);
+    expectNoPii(res.body[0]);
+    expect(res.body[0]).toHaveProperty("firstname");
+  });
+
+  it("student search cannot be used as an email oracle", async () => {
+    const res = await auth(
+      request(app).get("/api/student/search?property=email&key=student"),
+      companyToken()
+    );
+    expect(res.status).toBe(400);
+    expect(searchByKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("another user's student profile omits contact and geolocation PII", async () => {
+    const res = await auth(request(app).get(`/api/student/${STUDENT_ID}`), companyToken());
+    expect(res.status).toBe(200);
+    expectNoPii(res.body);
+  });
+
+  it("a student still sees their own full profile (no over-blocking)", async () => {
+    const res = await auth(request(app).get(`/api/student/${STUDENT_ID}`), studentToken());
+    expect(res.status).toBe(200);
+    expect(res.body.email).toBe(student.email);
+    expect(res.body.phone).toBe(student.phone);
+  });
+
+  it("applicant info is refused to a company the student never applied to", async () => {
+    const res = await auth(request(app).get(`/api/company/user/${STUDENT_ID}`), companyToken());
+    expect(res.status).toBe(403);
+    expect(res.body).not.toHaveProperty("email");
+    expect(hasCandidacyForCompanyMock).toHaveBeenCalledWith(COMPANY_ID, STUDENT_ID);
+  });
+
+  it("applicant info is available to a company the student applied to", async () => {
+    hasCandidacyForCompanyMock.mockResolvedValueOnce(true);
+    const res = await auth(request(app).get(`/api/company/user/${STUDENT_ID}`), companyToken());
+    expect(res.status).toBe(200);
+    expect(res.body.email).toBe(student.email);
+  });
+
+  it("applicant info is refused to another student", async () => {
+    const otherStudent = tokenFor(GHOST_ID);
+    const res = await auth(request(app).get(`/api/company/user/${STUDENT_ID}`), otherStudent);
+    expect(res.status).toBe(403);
+  });
+
+  // Offer candidacies (applicant PII) are owner-only
+  it("a company cannot read another company's candidacies", async () => {
+    const res = await auth(
+      request(app).get(`/api/offers/candidacies?id=${VICTIM_OFFER_ID}`),
+      companyToken()
+    );
+    expect(res.status).toBe(403);
+    expect(listCandidaciesMock).not.toHaveBeenCalled();
+  });
+
+  it("a student cannot read an offer's candidacies", async () => {
+    const res = await auth(
+      request(app).get(`/api/offers/candidacies?id=${OFFER_ID}`),
+      studentToken()
+    );
+    expect(res.status).toBe(403);
+    expect(listCandidaciesMock).not.toHaveBeenCalled();
+  });
+
+  it("a company can still read candidacies for its own offer (no over-blocking)", async () => {
+    const res = await auth(
+      request(app).get(`/api/offers/candidacies?id=${OFFER_ID}`),
+      companyToken()
+    );
+    expect(res.status).toBe(200);
+    expect(listCandidaciesMock).toHaveBeenCalledWith(OFFER_ID);
+  });
+
+  it("listing another company's offers never loads their candidacies", async () => {
+    const res = await auth(
+      request(app).get(`/api/offers/myoffers?id=${VICTIM_COMPANY_ID}`),
+      companyToken()
+    );
+    expect(res.status).toBe(200);
+    expect(res.body[0].candidacies).toEqual([]);
+    expect(listCandidaciesByOfferIdsMock).not.toHaveBeenCalled();
+  });
+
+  it("a company's own offer listing still includes candidacies", async () => {
+    const res = await auth(
+      request(app).get(`/api/offers/myoffers?id=${COMPANY_ID}`),
+      companyToken()
+    );
+    expect(res.status).toBe(200);
+    expect(listCandidaciesByOfferIdsMock).toHaveBeenCalledWith([OFFER_ID]);
+  });
+
+  it("a single offer viewed by a non-owner has no candidacies", async () => {
+    const res = await auth(request(app).get(`/api/offers/${VICTIM_OFFER_ID}`), studentToken());
+    expect(res.status).toBe(200);
+    expect(res.body.candidacies).toEqual([]);
+    expect(listCandidaciesMock).not.toHaveBeenCalled();
   });
 
   // Finding #5
@@ -382,6 +501,26 @@ describe("A04:2021 Insecure Design", () => {
     ).send({ title: "CSRF", body: "CSRF" });
 
     expect(res.status).toBe(403);
+  });
+
+  it("blocks an opaque `Origin: null` request (sandboxed iframe bypass)", async () => {
+    const res = await auth(
+      request(app).post("/api/student/posts").set("Origin", "null").type("form"),
+      studentToken()
+    ).send("title=CSRF&body=CSRF");
+
+    expect(res.status).toBe(403);
+    expect(createPostMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks a request whose only Referer cannot be parsed", async () => {
+    const res = await auth(
+      request(app).post("/api/student/posts").set("Referer", "not a url"),
+      studentToken()
+    ).send({ title: "CSRF", body: "CSRF" });
+
+    expect(res.status).toBe(403);
+    expect(createPostMock).not.toHaveBeenCalled();
   });
 
   it("allows the legitimate frontend origin (no over-blocking) (finding #6)", async () => {
@@ -752,5 +891,39 @@ describe("A10:2021 Server-Side Request Forgery", () => {
 
     jest.dontMock("node-geocoder");
     jest.resetModules();
+  });
+});
+
+// ===========================================================================
+// File uploads — multer errors are client errors, not 500s
+// ===========================================================================
+
+describe("Upload error handling", () => {
+  it("rejects an oversized upload with 413", async () => {
+    const big = Buffer.alloc(10 * 1024 * 1024 + 1, 0);
+    const res = await auth(
+      request(app).post(`/api/student/upload/${STUDENT_ID}`),
+      studentToken()
+    ).attach("image", big, "big.png");
+
+    expect(res.status).toBe(413);
+  });
+
+  it("rejects an unexpected upload field with 400", async () => {
+    const res = await auth(
+      request(app).post(`/api/student/upload/${STUDENT_ID}`),
+      studentToken()
+    ).attach("notimage", Buffer.from("x"), "a.png");
+
+    expect(res.status).toBe(400);
+  });
+
+  it("still rejects a disallowed extension with 400", async () => {
+    const res = await auth(
+      request(app).post(`/api/student/upload/${STUDENT_ID}`),
+      studentToken()
+    ).attach("image", Buffer.from("p"), { filename: "x.pug", contentType: "text/x-pug" });
+
+    expect(res.status).toBe(400);
   });
 });

@@ -75,6 +75,9 @@ const spies = {
   createPost: jest.fn(async () => ({ id: "post-1" })),
   searchByKey: jest.fn(async () => []),
   listAll: jest.fn(async () => [student]),
+  listCandidacies: jest.fn(async () => []),
+  listCandidaciesByOfferIds: jest.fn(async () => []),
+  hasCandidacyForCompany: jest.fn(async () => false),
 };
 
 const buildRepositories = () => ({
@@ -85,7 +88,7 @@ const buildRepositories = () => ({
     listIds: jest.fn(async () => [IDS.STUDENT_ID]),
     searchByKey: spies.searchByKey,
     updateStudent: spies.updateStudent,
-    searchByFilters: jest.fn(async () => []),
+    searchByFilters: jest.fn(async () => [student]),
   },
   companyRepository: {
     findById: jest.fn(async (id) => {
@@ -112,11 +115,16 @@ const buildRepositories = () => ({
     updateOffer: spies.updateOffer,
     deleteOffer: spies.deleteOffer,
     listOffers: jest.fn(async () => []),
-    listOffersByCompany: jest.fn(async () => []),
-    listCandidacies: jest.fn(async () => []),
-    listCandidaciesByOfferIds: jest.fn(async () => []),
+    listOffersByCompany: jest.fn(async (id) => {
+      if (id === IDS.COMPANY_ID) return [ownOffer];
+      if (id === IDS.VICTIM_COMPANY_ID) return [victimOffer];
+      return [];
+    }),
+    listCandidacies: spies.listCandidacies,
+    listCandidaciesByOfferIds: spies.listCandidaciesByOfferIds,
+    hasCandidacyForCompany: spies.hasCandidacyForCompany,
     searchByKey: spies.searchByKey,
-    mapOfferRow: (o) => o,
+    mapOfferRow: (o, candidacies = []) => ({ ...o, candidacies }),
     mapCandidacyRow: (c) => c,
   },
   postRepository: {

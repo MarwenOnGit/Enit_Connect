@@ -1,5 +1,7 @@
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
+const multer = require('multer');
 
 // Allowlisted upload extensions (documents + images). Executable/template
 // extensions such as pug, js, html, php, sh are intentionally excluded so a
@@ -60,6 +62,49 @@ function badRequest(message) {
   return err;
 }
 
+const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
+
+// Single-file upload middleware shared by every route that writes into
+// uploads/. Filenames are server-generated from an allowlisted extension, and
+// multer's own errors (size limit, unexpected field) are answered as client
+// errors here instead of surfacing as a generic 500 from the global handler.
+function createUploadMiddleware(fieldName, invalidTypeMessage) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+  const diskStorage = multer.diskStorage({
+    destination: function (req, file, cb) {
+      cb(null, UPLOAD_DIR);
+    },
+    filename: function (req, file, cb) {
+      // Resolve an allowlisted extension from the file itself (original name /
+      // mimetype) so a crafted mimetype cannot steer the write path.
+      const ext = resolveSafeExtension(req, file);
+      if (!ext) {
+        return cb(badRequest(invalidTypeMessage));
+      }
+      cb(null, buildSafeFilename(file.fieldname, ext));
+    }
+  });
+
+  const handler = multer({
+    storage: diskStorage,
+    limits: { fileSize: MAX_UPLOAD_BYTES },
+  }).single(fieldName);
+
+  return (req, res, next) => {
+    handler(req, res, (err) => {
+      if (!err) return next();
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).send({ message: 'File too large. Maximum size is 10 MB.' });
+      }
+      if (err instanceof multer.MulterError) {
+        return res.status(400).send({ message: 'File upload failed.' });
+      }
+      return next(err);
+    });
+  };
+}
+
 module.exports = {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_BYTES,
@@ -67,4 +112,5 @@ module.exports = {
   resolveSafeExtension,
   buildSafeFilename,
   badRequest,
+  createUploadMiddleware,
 };

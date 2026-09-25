@@ -15,9 +15,19 @@ const allowedSearchFields = {
   end: "end_date",
 };
 
-const buildOffersWithCandidacies = async (offers) => {
+// Candidacies carry applicants' personal data (studentSnapshot, application
+// body, documents), so they are only ever returned to the company that owns
+// the offer. Everyone else gets the offer with an empty candidacies list.
+const isOfferOwner = (offer, callerId) =>
+  Boolean(callerId) && String(offer.company_id) === String(callerId);
+
+const buildOffersWithCandidacies = async (offers, callerId) => {
   if (!offers.length) return [];
-  const offerIds = offers.map((offer) => offer.id);
+  const ownedOffers = offers.filter((offer) => isOfferOwner(offer, callerId));
+  if (!ownedOffers.length) {
+    return offers.map((offer) => offerRepository.mapOfferRow(offer, []));
+  }
+  const offerIds = ownedOffers.map((offer) => offer.id);
   const candidacyRows = await offerRepository.listCandidaciesByOfferIds(offerIds);
   const candidacyMap = new Map();
   candidacyRows.forEach((row) => {
@@ -84,7 +94,7 @@ exports.addOffer = async (req, res) => {
 exports.getAll = async (req, res) => {
   try {
     const offers = await offerRepository.listOffers();
-    const response = await buildOffersWithCandidacies(offers);
+    const response = await buildOffersWithCandidacies(offers, req.id);
     res.status(200).send(response);
   } catch (err) {
     console.error("[500]", req.method, req.originalUrl, err);
@@ -100,7 +110,7 @@ exports.getByKey = async (req, res) => {
       return res.status(400).send({ message: "Invalid search parameters." });
     }
     const offers = await offerRepository.searchByKey(column, key);
-    const response = await buildOffersWithCandidacies(offers);
+    const response = await buildOffersWithCandidacies(offers, req.id);
     res.status(200).send(response);
   } catch (err) {
     console.error("[500]", req.method, req.originalUrl, err);
@@ -115,7 +125,7 @@ exports.getCompanyOffers = async (req, res) => {
       return res.status(400).send({ message: "Invalid company id." });
     }
     const offers = await offerRepository.listOffersByCompany(companyId);
-    const response = await buildOffersWithCandidacies(offers);
+    const response = await buildOffersWithCandidacies(offers, req.id);
     res.status(200).send(response);
   } catch (err) {
     console.error("[500]", req.method, req.originalUrl, err);
@@ -133,6 +143,9 @@ exports.getCandidacies = async (req, res) => {
     const offer = await offerRepository.findById(offerId);
     if (!offer) {
       return res.status(404).send({ message: "No Candidacies found." });
+    }
+    if (!isOfferOwner(offer, req.id)) {
+      return res.status(403).send({ message: "Unauthorized offer access." });
     }
 
     const candidacies = await offerRepository.listCandidacies(offerId);
@@ -220,7 +233,9 @@ exports.getOfferById = async (req, res) => {
       await offerViewRepository.recordView(offer.id, req.id || null, req.cookies?.userType || "anonymous");
     } catch { /* ignore */ }
 
-    const candidacies = await offerRepository.listCandidacies(offer.id);
+    const candidacies = isOfferOwner(offer, req.id)
+      ? await offerRepository.listCandidacies(offer.id)
+      : [];
     const response = offerRepository.mapOfferRow(
       offer,
       candidacies.map(offerRepository.mapCandidacyRow)
